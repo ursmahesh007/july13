@@ -1,0 +1,84 @@
+#Multi-configuration and multi-agent job options are not exported to YAML. Configure these options using documentation guidance: https://docs.microsoft.com/vsts/pipelines/process/phases
+
+trigger:
+  branches:
+    include:
+    - '*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+  
+variables:
+- name: BuildConfiguration
+  value: publish
+
+stages:
+- stage: BuildStage
+  displayName: Build Stage
+  jobs:
+  - job: BuildArtifactStage
+    displayName: Build Artifact Stage
+    steps:
+    - task: CopyFiles@2
+      displayName: 'Copy Files to Staging Directory'
+      inputs:
+        SourceFolder: '$(system.defaultworkingdirectory)'
+        Contents: '**/*.*'
+        CleanTargetFolder: true
+        OverWrite: true
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Artifact: dev'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)'
+        artifact: 'dev'
+        publishLocation: 'pipeline'
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Artifact: master'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)'
+        artifact: 'master'
+        publishLocation: 'pipeline'
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+
+- stage: ProductionStage
+  displayName: Production Stage
+  dependsOn: [BuildStage]
+  jobs:
+  - deployment: DeployToProductionEnv
+    displayName: Deploy to Production Environment
+    pool:
+      vmImage: 'Ubuntu-16.04'
+    environment: 'Production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: UsePythonVersion@0
+            displayName: 'Use Python 3.7'
+            inputs:
+              versionSpec: '3.7'
+              addToPath: true
+              architecture: 'x64'
+          - task: CmdLine@2
+            displayName: 'Install Dependencies'
+            inputs:
+              script: |
+                sudo apt-get install virtualenv -y
+                virtualenv -p python3.7 antenv
+                source antenv/bin/activate
+                python3.7 -m pip install --upgrade pip
+                python3.7 -m pip install -r requirements.txt
+                python3.7 -m pip list
+              workingDirectory: '$(Pipeline.Workspace)/master'
+          - task: AzureRmWebAppDeployment@4
+            displayName: 'Deploy to Azure App Service - Production'
+            inputs:
+              ConnectionType: 'AzureRM'
+              azureSubscription: 'Applied AI CoE Sandbox(8ff77b02-86c3-4a55-a9d6-5a3fd092615a)'
+              appType: 'webAppLinux'
+              WebAppName: 'AramarkWebapp-prod'
+              packageForLinux: '$(Pipeline.Workspace)/master'
+              RuntimeStack: 'PYTHON|3.8'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
